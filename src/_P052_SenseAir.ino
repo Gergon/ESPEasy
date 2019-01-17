@@ -1,3 +1,4 @@
+#ifdef USES_P052
 //#######################################################################################################
 //############################# Plugin 052: Senseair CO2 Sensors ########################################
 //#######################################################################################################
@@ -5,7 +6,7 @@
   Plugin originally written by: Daniel Tedenljung info__AT__tedenljungconsulting.com
   Rewritten by: Mikael Trieb mikael__AT__triebconsulting.se
 
-  This plugin reads availble values of Senseair Co2 Sensors.
+  This plugin reads available values of Senseair Co2 Sensors.
   Datasheet can be found here:
   S8: http://www.senseair.com/products/oem-modules/senseair-s8/
   K30: http://www.senseair.com/products/oem-modules/k30/
@@ -24,8 +25,8 @@
 
 boolean Plugin_052_init = false;
 
-#include <SoftwareSerial.h>
-SoftwareSerial *Plugin_052_SoftSerial;
+#include <ESPeasySerial.h>
+ESPeasySerial *P052_easySerial;
 
 boolean Plugin_052(byte function, struct EventStruct *event, String& string)
 {
@@ -62,31 +63,60 @@ boolean Plugin_052(byte function, struct EventStruct *event, String& string)
         break;
       }
 
+    case PLUGIN_GET_DEVICEGPIONAMES:
+      {
+        serialHelper_getGpioNames(event);
+        break;
+      }
+
       case PLUGIN_WRITE:
           {
-            String tmpString = string;
-
-      			String cmd = parseString(tmpString, 1);
-      			String param1 = parseString(tmpString, 2);
-
+      			String cmd = parseString(string, 1);
+      			String param1 = parseString(string, 2);
 
             if (cmd.equalsIgnoreCase(F("senseair_setrelay")))
             {
-              if (param1.toInt() == 0 || param1.toInt() == 1 || param1.toInt() == -1) {
-                Plugin_052_setRelayStatus(param1.toInt());
-                addLog(LOG_LEVEL_INFO, String(F("Senseair command: relay=")) + param1);
+              int par1;
+              if (validIntFromString(param1, par1)) {
+                if (par1 == 0 || par1 == 1 || par1 == -1) {
+                  Plugin_052_setRelayStatus(par1);
+                  addLog(LOG_LEVEL_INFO, String(F("Senseair command: relay=")) + param1);
+                }
               }
               success = true;
             }
+
+            /*
+            // ABC functionality disabled for now, due to a bug in the firmware.
+            // See https://github.com/letscontrolit/ESPEasy/issues/759
+            if (cmd.equalsIgnoreCase(F("senseair_setABCperiod")))
+            {
+              if (param1.toInt() >= 0) {
+                Plugin_052_setABCperiod(param1.toInt());
+                addLog(LOG_LEVEL_INFO, String(F("Senseair command: ABCperiod=")) + param1);
+              }
+              success = true;
+            }
+            */
 
             break;
           }
 
     case PLUGIN_WEBFORM_LOAD:
       {
-          byte choice = Settings.TaskDevicePluginConfig[event->TaskIndex][0];
-          String options[6] = { F("Error Status"), F("Carbon Dioxide"), F("Temperature"), F("Humidity"), F("Relay Status"), F("Temperature Adjustment") };
-          addFormSelector(string, F("Sensor"), F("plugin_052"), 6, options, NULL, choice);
+          serialHelper_webformLoad(event);
+          byte choiceSensor = PCONFIG(0);
+
+          String optionsSensor[7] = { F("Error Status"), F("Carbon Dioxide"), F("Temperature"), F("Humidity"), F("Relay Status"), F("Temperature Adjustment"), F("ABC period") };
+          addFormSelector(F("Sensor"), F("p052_sensor"), 7, optionsSensor, NULL, choiceSensor);
+
+          /*
+          // ABC functionality disabled for now, due to a bug in the firmware.
+          // See https://github.com/letscontrolit/ESPEasy/issues/759
+          byte choiceABCperiod = PCONFIG(1);
+          String optionsABCperiod[9] = { F("disable"), F("1 h"), F("12 h"), F("1 day"), F("2 days"), F("4 days"), F("7 days"), F("14 days"), F("30 days") };
+          addFormSelector(F("ABC period"), F("p052_ABC_period"), 9, optionsABCperiod, NULL, choiceABCperiod);
+          */
 
           success = true;
           break;
@@ -94,17 +124,33 @@ boolean Plugin_052(byte function, struct EventStruct *event, String& string)
 
     case PLUGIN_WEBFORM_SAVE:
       {
-          String plugin1 = WebServer.arg(F("plugin_052"));
-          Settings.TaskDevicePluginConfig[event->TaskIndex][0] = plugin1.toInt();
-          success = true;
-          break;
+        serialHelper_webformSave(event);
+        PCONFIG(0) = getFormItemInt(F("p052_sensor"));
+        /*
+        // ABC functionality disabled for now, due to a bug in the firmware.
+        // See https://github.com/letscontrolit/ESPEasy/issues/759
+        PCONFIG(1) = getFormItemInt(F("p052_ABC_period"));
+        */
+
+        success = true;
+        break;
       }
 
     case PLUGIN_INIT:
       {
         Plugin_052_init = true;
-        Plugin_052_SoftSerial = new SoftwareSerial(Settings.TaskDevicePin1[event->TaskIndex],
-                                                   Settings.TaskDevicePin2[event->TaskIndex]);
+        P052_easySerial = new ESPeasySerial(CONFIG_PIN1,
+                                                   CONFIG_PIN2);
+
+        /*
+        // ABC functionality disabled for now, due to a bug in the firmware.
+        // See https://github.com/letscontrolit/ESPEasy/issues/759
+        const int periodInHours[9] = {0, 1, 12, (24*1), (24*2), (24*4), (24*7), (24*14), (24*30) };
+        byte choiceABCperiod = PCONFIG(1);
+
+        Plugin_052_setABCperiod(periodInHours[choiceABCperiod]);
+        */
+
         success = true;
         break;
       }
@@ -116,7 +162,7 @@ boolean Plugin_052(byte function, struct EventStruct *event, String& string)
         {
 
           String log = F("Senseair: ");
-          switch(Settings.TaskDevicePluginConfig[event->TaskIndex][0])
+          switch(PCONFIG(0))
           {
               case 0:
               {
@@ -175,6 +221,14 @@ boolean Plugin_052(byte function, struct EventStruct *event, String& string)
                   log += temperatureAdjustment;
                   break;
               }
+              case 6:
+              {
+                  int period = Plugin_052_readABCperiod();
+                  UserVar[event->BaseVarIndex] = period;
+                  log += F("ABC period = ");
+                  log += period;
+                  break;
+              }
           }
           addLog(LOG_LEVEL_INFO, log);
 
@@ -201,7 +255,7 @@ void Plugin_052_buildFrame(byte slaveAddress,
   frame[5] = (byte)(numberOfRegisters);
   // CRC-calculation
   byte checkSum[2] = {0};
-  unsigned int crc = Plugin_052_ModRTU_CRC(frame, 6, checkSum);
+  Plugin_052_ModRTU_CRC(frame, 6, checkSum);
   frame[6] = checkSum[0];
   frame[7] = checkSum[1];
 }
@@ -212,13 +266,13 @@ int Plugin_052_sendCommand(byte command[])
   byte data_buf[2] = {0xff};
   long value       = -1;
 
-  Plugin_052_SoftSerial->write(command, 8); //Send the byte array
+  P052_easySerial->write(command, 8); //Send the byte array
   delay(50);
 
   // Read answer from sensor
   int ByteCounter = 0;
-  while(Plugin_052_SoftSerial->available()) {
-    recv_buf[ByteCounter] = Plugin_052_SoftSerial->read();
+  while(P052_easySerial->available()) {
+    recv_buf[ByteCounter] = P052_easySerial->read();
     ByteCounter++;
   }
 
@@ -300,7 +354,7 @@ int Plugin_052_readTemperatureAdjustment(void)
 }
 
 void Plugin_052_setRelayStatus(int status) {
-  int response;
+  // int response;
   byte frame[8] = {0};
   if (status == 0) {
     Plugin_052_buildFrame(0xFE, 0x06, 0x18, 0x0000, frame);
@@ -309,8 +363,31 @@ void Plugin_052_setRelayStatus(int status) {
   } else {
     Plugin_052_buildFrame(0xFE, 0x06, 0x18, 0x7FFF, frame);
   }
-  response = Plugin_052_sendCommand(frame);
+  Plugin_052_sendCommand(frame);
 }
+
+int Plugin_052_readABCperiod(void)
+{
+  int period = 0;
+  byte frame[8] = {0};
+
+  Plugin_052_buildFrame(0xFE, 0x03, 0x001F, 0x0001, frame);
+  period = Plugin_052_sendCommand(frame);
+
+  return period;
+}
+
+/*
+// ABC functionality disabled for now, due to a bug in the firmware.
+// See https://github.com/letscontrolit/ESPEasy/issues/759
+void Plugin_052_setABCperiod(int period)
+{
+  byte frame[8] = {0};
+
+  Plugin_052_buildFrame(0xFE, 0x06, 0x001F, period, frame);
+  Plugin_052_sendCommand(frame);
+}
+*/
 
 // Compute the MODBUS RTU CRC
 unsigned int Plugin_052_ModRTU_CRC(byte buf[], int len, byte checkSum[2])
@@ -348,3 +425,4 @@ int getBitOfInt(int reg, int pos)
 
   return result;
 }
+#endif // USES_P052
